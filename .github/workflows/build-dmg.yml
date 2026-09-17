@@ -1,0 +1,95 @@
+name: Build PlayCover DMG (ad-hoc signed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "git ref to build (branch/tag/sha)"
+        required: false
+        default: "develop"
+      config:
+        description: "Xcode build configuration"
+        required: false
+        default: "Nightly"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          sw_vers
+          node --version
+          python3 --version
+
+      - name: Install deps (carthage, swiftlint)
+        run: |
+          brew install carthage swiftlint || brew upgrade carthage swiftlint
+
+      - name: Carthage update
+        run: carthage update --use-xcframeworks --platform macOS --verbose
+
+      - name: Build app (ad-hoc signed)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project PlayCover.xcodeproj \
+            -scheme PlayCover \
+            -configuration "${{ inputs.config }}" \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES \
+            ENABLE_HARDENED_RUNTIME=YES \
+            FASTLANE=1 \
+            build
+
+      - name: Locate app bundle
+        id: locate
+        run: |
+          APP=$(find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 2 -name "PlayCover.app" -print -quit)
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          echo "Found: $APP"
+          codesign -dv --entitlements - "$APP" 2>&1 | head -40 || true
+
+      - name: Create DMG
+        run: |
+          mkdir -p output
+          cp -R "${{ steps.locate.outputs.app }}" output/
+          npm install --no-save https://github.com/PlayCover/create-dmg
+          npx create-dmg ./output/PlayCover.app ./output || true
+          ls -lh output/
+
+      - name: Rename + checksum
+        run: |
+          SRC=$(find output -maxdepth 1 -name '*.dmg' -print -quit)
+          SRC_NAME=$(basename "$SRC")
+          SHA=$(git rev-parse --short HEAD)
+          cp "$SRC" "output/PlayCover_develop_${SHA}.dmg"
+          shasum -a 256 "output/PlayCover_develop_${SHA}.dmg" | tee output/SHA256.txt
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlayCover-dmg
+          path: |
+            output/PlayCover_develop_*.dmg
+            output/SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
