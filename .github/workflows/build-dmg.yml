@@ -40,7 +40,7 @@ jobs:
           brew install carthage swiftlint || brew upgrade carthage swiftlint
 
       - name: Carthage update
-        run: carthage update --use-xcframeworks --platform macOS --verbose
+        run: carthage update --use-xcframeworks --cache-builds --verbose
 
       - name: Build app (ad-hoc signed)
         run: |
